@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>周老师围棋教室 - 互动学习版</title>
+    <style>
+        body { background-color: #f0f0f0; display: flex; flex-direction: column; align-items: center; font-family: "Microsoft YaHei", sans-serif; }
+        h1 { color: #333; margin-bottom: 10px; }
+        .game-container { position: relative; box-shadow: 0 10px 20px rgba(0,0,0,0.3); border-radius: 4px; }
+        canvas { background-color: #e3c086; cursor: pointer; display: block; }
+        .info-panel { margin-top: 15px; display: flex; gap: 15px; align-items: center; }
+        .btn { padding: 8px 15px; background-color: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 4px; font-size: 16px; transition: background-color 0.3s; }
+        .btn.secondary { background-color: #2196F3; }
+        .btn.tertiary { background-color: #ff9800; }
+        .btn:hover { opacity: 0.9; }
+        .status { font-weight: bold; font-size: 18px; min-width: 150px; text-align: center;}
+    </style>
+</head>
+<body>
+
+    <h1>围棋练习 (19路 - 智能提示AI)</h1>
+    
+    <!-- 🔥 新增：背景音乐元素 -->
+    <audio id="bgMusic" loop src="assets/1.mp3"></audio>
+
+    <div class="game-container">
+        <canvas id="goBoard" width="600" height="600"></canvas>
+    </div>
+    <div class="info-panel">
+        <div class="status">请执黑先行</div>
+        <button class="btn" onclick="game.resetGame()">重新开始</button>
+        <button class="btn secondary" onclick="game.toggleAI()" id="aiBtn">切换模式：双人对战</button>
+        <!-- 🔥 新增：音乐控制按钮 -->
+        <button class="btn tertiary" id="musicBtn" onclick="toggleMusic()">播放音乐</button>
+    </div>
+
+<script>
+// --- 🔥 新增：音乐控制逻辑 ---
+const bgMusic = document.getElementById('bgMusic');
+const musicBtn = document.getElementById('musicBtn');
+let isMusicPlaying = false;
+function toggleMusic() {
+    if (isMusicPlaying) {
+        bgMusic.pause();
+        musicBtn.innerText = '播放音乐';
+    } else {
+        bgMusic.play().catch(e => console.log("音乐播放失败:", e));
+        musicBtn.innerText = '静音';
+    }
+    isMusicPlaying = !isMusicPlaying;
+}
+
+class GoGame {
+    constructor(canvasId) {
+        this.canvas = document.getElementById(canvasId);
+        this.ctx = this.canvas.getContext('2d');
+        this.gridSize = 19;
+        this.boardSize = 600;
+        this.cellSize = (this.boardSize - 60) / (this.gridSize - 1);
+        // --- 🔥 更新：更换了更逼真的落子音效 ---
+        this.clickSound = new Audio('assets/2.wav');
+        this.isAIEnabled = false; 
+        this.init();
+        this.canvas.addEventListener('mousedown', (e) => this.handleInput(e));
+    }
+
+    init() {
+        this.board = Array(this.gridSize).fill().map(() => Array(this.gridSize).fill(0));
+        this.currentColor = 1; // 1:黑(玩家), 2:白(电脑)
+        this.history = [];
+        this.draw();
+        this.updateStatus();
+    }
+
+    toggleAI() {
+        this.isAIEnabled = !this.isAIEnabled;
+        document.getElementById('aiBtn').innerText = this.isAIEnabled ? "模式：人机对战(带提示)" : "模式：双人对战";
+        this.resetGame();
+    }
+
+    draw() {
+        this.ctx.clearRect(0, 0, this.boardSize, this.boardSize);
+        this.ctx.fillStyle = '#e3c086'; this.ctx.fillRect(0, 0, this.boardSize, this.boardSize);
+        this.ctx.beginPath(); this.ctx.strokeStyle = '#000';
+        for (let i = 0; i < this.gridSize; i++) {
+            const p = 30 + i * this.cellSize;
+            this.ctx.moveTo(30, p); this.ctx.lineTo(this.boardSize - 30, p);
+            this.ctx.moveTo(p, 30); this.ctx.lineTo(p, this.boardSize - 30);
+        }
+        this.ctx.stroke();
+        [3, 9, 15].forEach(r => [3, 9, 15].forEach(c => {
+            this.ctx.beginPath(); this.ctx.arc(30 + c * this.cellSize, 30 + r * this.cellSize, 4, 0, 2 * Math.PI);
+            this.ctx.fillStyle = '#000'; this.ctx.fill();
+        }));
+
+        for (let y = 0; y < this.gridSize; y++) for (let x = 0; x < this.gridSize; x++) if (this.board[y][x]) this.drawStone(x, y, this.board[y][x]);
+        
+        // --- 🔥 新增：如果开启AI并且轮到玩家，显示气的提示 ---
+        if (this.isAIEnabled && this.currentColor === 1) {
+            this.displayLibertyHints();
+        }
+
+        if (this.history.length > 0) {
+            const last = this.history[this.history.length-1];
+            this.ctx.strokeStyle = 'red'; this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(30 + last.x*this.cellSize - this.cellSize/2, 30 + last.y*this.cellSize - this.cellSize/2, this.cellSize, this.cellSize);
+            this.ctx.lineWidth = 1;
+        }
+    }
+
+    // --- 🔥 新增：显示“气”的提示功能 ---
+    displayLibertyHints() {
+        this.ctx.font = 'bold 14px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        const visited = new Set();
+
+        for (let y = 0; y < this.gridSize; y++) {
+            for (let x = 0; x < this.gridSize; x++) {
+                const key = `${x},${y}`;
+                if (this.board[y][x] !== 0 && !visited.has(key)) {
+                    const color = this.board[y][x];
+                    const group = this.getGroup(x, y, color, this.board);
+                    
+                    group.stones.forEach(stone => visited.add(`${stone[0]},${stone[1]}`));
+                    
+                    if (group.stones.length > 0) {
+                        let avgX = group.stones.reduce((sum, s) => sum + s[0], 0) / group.stones.length;
+                        let avgY = group.stones.reduce((sum, s) => sum + s[1], 0) / group.stones.length;
+
+                        const canvasX = 30 + avgX * this.cellSize;
+                        const canvasY = 30 + avgY * this.cellSize;
+                        
+                        // 根据棋子颜色设置提示文字颜色，保证清晰
+                        this.ctx.fillStyle = (color === 1) ? '#63E6BE' : '#FF6B6B';
+                        this.ctx.fillText(group.liberties, canvasX, canvasY);
+                    }
+                }
+            }
+        }
+    }
+
+    drawStone(x, y, color) {
+        const cx = 30 + x * this.cellSize, cy = 30 + y * this.cellSize;
+        this.ctx.beginPath(); this.ctx.arc(cx, cy, this.cellSize/2 - 2, 0, 2 * Math.PI);
+        const g = this.ctx.createRadialGradient(cx-3, cy-3, 2, cx, cy, 15);
+        if (color === 1) { g.addColorStop(0, '#555'); g.addColorStop(1, '#000'); }
+        else { g.addColorStop(0, '#fff'); g.addColorStop(1, '#ddd'); }
+        this.ctx.fillStyle = g; this.ctx.fill();
+    }
+
+    handleInput(e) {
+        if (this.isAIEnabled && this.currentColor === 2) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const x = Math.round((e.clientX - rect.left - 30) / this.cellSize);
+        const y = Math.round((e.clientY - rect.top - 30) / this.cellSize);
+        this.attemptMove(x, y);
+    }
+
+    attemptMove(x, y, isAI = false) {
+        if (x < 0 || x >= 19 || y < 0 || y >= 19 || this.board[y][x] !== 0) return false;
+        
+        const tempBoard = this.board.map(row => row.slice());
+        tempBoard[y][x] = this.currentColor;
+        let capturedStones = this.checkAndRemoveCaptures(x, y, tempBoard, this.currentColor);
+        
+        if (capturedStones === 0 && this.getGroup(x, y, this.currentColor, tempBoard).liberties === 0) {
+            if (!isAI) alert("禁着点：不能没有气！");
+            return false;
+        }
+        
+        this.board = tempBoard;
+        if (!isAI) {
+            this.clickSound.currentTime = 0;
+            this.clickSound.play().catch(()=>{});
+        }
+        this.history.push({x, y, color: this.currentColor, captured: capturedStones});
+        this.currentColor = 3 - this.currentColor;
+        
+        this.draw();
+        this.updateStatus();
+        
+        if (this.isAIEnabled && this.currentColor === 2 && !isAI) {
+            document.querySelector('.status').innerText = "电脑思考中...";
+            setTimeout(() => this.makeSmarterAIMove(), 500);
+        }
+        return true;
+    }
+
+    getGroup(startX, startY, color, boardState) {
+        const board = boardState || this.board;
+        if (startX < 0 || startX >= 19 || startY < 0 || startY >= 19 || board[startY][startX] !== color) return { stones: [], liberties: 0 };
+        
+        const stones = [];
+        const libertyCoords = new Set();
+        const visited = new Set();
+        const stack = [[startX, startY]];
+        visited.add(`${startX},${startY}`);
+        
+        while (stack.length > 0) {
+            const [x, y] = stack.pop();
+            stones.push([x, y]);
+            
+            [[0,1], [0,-1], [1,0], [-1,0]].forEach(([dx, dy]) => {
+                const nx = x + dx, ny = y + dy, key = `${nx},${ny}`;
+                if (nx >= 0 && nx < 19 && ny >= 0 && ny < 19 && !visited.has(key)) {
+                    visited.add(key);
+                    if (board[ny][nx] === 0) libertyCoords.add(key);
+                    else if (board[ny][nx] === color) stack.push([nx, ny]);
+                }
+            });
+        }
+        return { stones: stones, liberties: libertyCoords.size };
+    }
+
+    checkAndRemoveCaptures(placedX, placedY, board, placedColor) {
+        let totalCaptured = 0;
+        const opponentColor = 3 - placedColor;
+        
+        [[0,1], [0,-1], [1,0], [-1,0]].forEach(([dx, dy]) => {
+            const nx = placedX + dx, ny = placedY + dy;
+            if (nx >= 0 && nx < 19 && ny >= 0 && ny < 19 && board[ny][nx] === opponentColor) {
+                const group = this.getGroup(nx, ny, opponentColor, board);
+                if (group.liberties === 0) {
+                    totalCaptured += group.stones.length;
+                    group.stones.forEach(([stoneX, stoneY]) => board[stoneY][stoneX] = 0);
+                }
+            }
+        });
+        return totalCaptured;
+    }
+
+    makeSmarterAIMove() {
+        const aiColor = 2;
+        let bestMove = null, maxScore = -Infinity, possibleMoves = [];
+
+        for (let y = 0; y < this.gridSize; y++) {
+            for (let x = 0; x < this.gridSize; x++) {
+                if (this.board[y][x] === 0) {
+                    const score = this.calculateScore(x, y, aiColor);
+                    if (score > maxScore) {
+                        maxScore = score;
+                        possibleMoves = [{x, y}];
+                    } else if (score > -1 && Math.abs(score - maxScore) < 10) { // 在分数相近时，都作为备选
+                        possibleMoves.push({x, y});
+                    }
+                }
+            }
+        }
+        if (possibleMoves.length > 0) {
+            bestMove = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+            this.attemptMove(bestMove.x, bestMove.y, true);
+        } else {
+            alert("电脑认输了！");
+        }
+    }
+
+    calculateScore(x, y, color) {
+        const tempBoard = this.board.map(row => row.slice());
+        tempBoard[y][x] = color;
+        let capturedOnThisMove = this.checkAndRemoveCaptures(x, y, tempBoard, color);
+        if (capturedOnThisMove === 0 && this.getGroup(x, y, color, tempBoard).liberties === 0) return -1;
+
+        let score = 0;
+        const opponent = 3 - color;
+        if (capturedOnThisMove > 0) score += 500 + capturedOnThisMove * 100;
+
+        const neighbors = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+        for (const [dx, dy] of neighbors) {
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= 19 || ny < 0 || ny >= 19) continue;
+            if (this.board[ny][nx] === color) {
+                const group = this.getGroup(nx, ny, color, this.board);
+                if (group.liberties === 1) {
+                     if (this.getGroup(nx, ny, color, tempBoard).liberties > 1) {
+                         score += 400 + group.stones.length * 20;
+                     }
+                }
+            }
+            if (this.board[ny][nx] === opponent) {
+                if (this.getGroup(nx, ny, opponent, tempBoard).liberties === 1) {
+                    score += 50 + this.getGroup(nx, ny, opponent, this.board).stones.length * 10;
+                }
+            }
+        }
+        if (x > 0 && x < 18 && this.board[y][x-1] === color && this.board[y][x+1] === 0) score += 30; // 横向连接
+        if (y > 0 && y < 18 && this.board[y-1][x] === color && this.board[y+1][x] === 0) score += 30; // 纵向连接
+        
+        if (this.history.length < 20) {
+            if ([3, 9, 15].includes(x) && [3, 9, 15].includes(y)) score += 25;
+        }
+        const distFromEdge = Math.min(x, y, 18 - x, 18 - y);
+        if (distFromEdge > 1) score += distFromEdge;
+        
+        score += Math.random() * 10; // 增加随机性
+        return score;
+    }
+
+    updateStatus() {
+        if (this.isAIEnabled) {
+            document.querySelector('.status').innerText = this.currentColor === 1 ? "请执黑落子(带提示)" : "执白(电脑)";
+        } else {
+            document.querySelector('.status').innerText = this.currentColor === 1 ? "轮到黑方" : "轮到白方";
+        }
+    }
+
+    resetGame() { this.init(); }
+}
+
+const game = new GoGame('goBoard');
+</script>
+
+</body>
+</html>
